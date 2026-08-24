@@ -6,13 +6,13 @@ garment weights properly, manage clothing, and repair what a Rigify conversion b
 > **Not affiliated with Human Generator or Auto-Rig Pro.** Contains no code from either
 > and requires no modification to them.
 
-| Button | Tab | What it does |
-|---|---|---|
-| **Bind Weights** | Clothing | Skins a garment to the character with Auto-Rig Pro's voxel binder, then cleans up. **Never touches body masks.** |
-| **Add to Character Clothing** | Clothing | Turns any mesh placed on the character into real HumGen clothing, then binds it. |
-| **Add to Clothing Asset Library** | Clothing | Saves **one** garment to your library, not the whole outfit. |
-| **Remove Clothing** | Clothing | Deletes garments *and* the body masks they added, so no holes are left behind. |
-| **Re-bind Clothing to Rigify** | Pose | Fixes clothing that stopped following the rig after a Rigify conversion. |
+| Button | What it does |
+|---|---|
+| **Bind Weights** | Skins a garment to the character with Auto-Rig Pro's voxel binder, then cleans up. **Never touches body masks.** |
+| **Add to Character Clothing** | Turns any mesh placed on the character into real HumGen clothing, then binds it. |
+| **Add to Clothing Asset Library** | Saves **one** garment to your library, not the whole outfit. |
+| **Remove Clothing** | Deletes garments *and* the body masks they added, so no holes are left behind. |
+| **Re-bind Clothing to Rigify** | Fixes clothing that stopped following the rig after a Rigify conversion. |
 
 ---
 
@@ -52,7 +52,7 @@ influences.
 
 ## Install
 
-1. Download `arche_extensions-2.0.0.zip` from
+1. Download the latest `arche_extensions-*.zip` from
    [Releases](https://github.com/RC-Shadow/arche-extensions/releases).
 2. **Edit ▸ Preferences ▸ Add-ons ▸ Install from Disk…**, pick the zip, enable
    **Arche Extensions**.
