@@ -15,8 +15,11 @@ importlib.reload(arche_extensions)
 check("package imports", True)
 check("bl_info name", arche_extensions.bl_info["name"] == "Arche Extensions",
       arche_extensions.bl_info["name"])
-check("version 2.0.0", arche_extensions.bl_info["version"] == (2, 0, 0))
-arche_extensions.register()
+v = arche_extensions.bl_info["version"]
+check("version >= 2.1.0", v >= (2, 1, 0), ".".join(str(x) for x in v))
+# headless Blender auto-enables an installed add-on, so it may already be registered
+if not hasattr(bpy.types, "ARCHEFX_OT_bind_weights"):
+    arche_extensions.register()
 for op in ("bind_weights", "add_as_clothing", "save_clothing_to_library",
            "remove_clothing", "rebind_humgen_rigify"):
     check("operator %s" % op, hasattr(bpy.types, "ARCHEFX_OT_" + op))
@@ -75,6 +78,9 @@ if rig and shirt:
 else:
     print("  (no TSA character in this file, skipped scene checks)")
 
-arche_extensions.unregister()
-check("unregisters cleanly", True)
+try:
+    arche_extensions.unregister()
+    check("unregisters cleanly", True)
+except Exception as exc:
+    check("unregisters cleanly", False, str(exc))
 print("\nRESULT: %s" % ("ALL PASS" if not FAIL else "FAILURES -> %s" % FAIL))

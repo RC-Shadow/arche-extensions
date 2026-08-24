@@ -34,28 +34,38 @@ def draw_rig_tools(layout, context):
     col.operator(ARCHEFX_OT_rebind_humgen_rigify.bl_idname, icon="GROUP_VERTEX")
 
 
-def _draw_in_clothing_panel(self, context):
-    """Appended to HumGen's Clothing tab. Wrapped so a failure here can never take
-    HumGen's own UI down with it."""
-    try:
-        box = self.layout.box()
-        box.label(text="Arche Extensions", icon="TOOL_SETTINGS")
-        draw_clothing_tools(box, context)
-    except Exception:  # noqa: BLE001
-        pass
+def draw_body(layout, context):
+    """Panel contents, shared by both tabs."""
+    obj = context.active_object
+    if obj is None:
+        layout.label(text="Select a garment or the character", icon="INFO")
+        return
+    row = layout.row()
+    row.label(text=obj.name, icon="OBJECT_DATA")
+    if "cloth" in obj or "shoe" in obj:
+        row.label(text="clothing", icon="CHECKMARK")
+
+    from .common import find_rig
+    rig = find_rig(obj)
+    if rig is None:
+        box = layout.box()
+        box.alert = True
+        box.label(text="No HumGen character found", icon="ERROR")
+    else:
+        layout.label(text="rig: " + rig.name, icon="ARMATURE_DATA")
+
+    layout.separator()
+    layout.label(text="Clothing", icon="MOD_CLOTH")
+    draw_clothing_tools(layout, context)
+    layout.separator()
+    layout.label(text="Rig", icon="ARMATURE_DATA")
+    draw_rig_tools(layout, context)
 
 
-def _draw_in_pose_panel(self, context):
-    try:
-        box = self.layout.box()
-        box.label(text="Arche Extensions", icon="TOOL_SETTINGS")
-        draw_rig_tools(box, context)
-    except Exception:  # noqa: BLE001
-        pass
-
-
+# Two independent panels, NOT a subclass: registering a Panel subclass lets Blender
+# clobber the base class's bl_category, which silently moved the Arche FX tab.
 class ARCHEFX_PT_tools(bpy.types.Panel):
-    """Fallback panel, registered only when HumGen's panels cannot be extended."""
+    """The add-on's own sidebar tab."""
 
     bl_idname = "ARCHEFX_PT_tools"
     bl_label = "Arche Extensions"
@@ -64,19 +74,29 @@ class ARCHEFX_PT_tools(bpy.types.Panel):
     bl_category = PANEL_CATEGORY
 
     def draw(self, context):
-        obj = context.active_object
-        if obj is None:
-            self.layout.label(text="Select an object", icon="INFO")
-            return
-        self.layout.label(text=obj.name, icon="OBJECT_DATA")
-        draw_clothing_tools(self.layout, context)
-        self.layout.separator()
-        draw_rig_tools(self.layout, context)
+        draw_body(self.layout, context)
 
 
-PANEL_HOOKS = (
-    ("HG_PT_CLOTHING", _draw_in_clothing_panel),
-    ("HG_PT_POSE", _draw_in_pose_panel),
-)
+class ARCHEFX_PT_humgen_tab(bpy.types.Panel):
+    """The same buttons, inside HumGen's own sidebar tab.
 
-classes = (ARCHEFX_PT_tools,)
+    Appending into HumGen's panels does not work: `bpy.types.HG_PT_CLOTHING` is the
+    very class you get by importing it, yet `_draw_funcs` stays empty after
+    `append()`. Registering our own panel with `bl_category = "HumGen"` puts the
+    buttons in that tab reliably, and nothing another add-on does can wipe it.
+    """
+
+    bl_idname = "ARCHEFX_PT_humgen_tab"
+    bl_label = "Arche Extensions"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "HumGen"
+
+    def draw(self, context):
+        draw_body(self.layout, context)
+
+
+# Appending into HumGen's panels was tried and does not work - see the note above.
+PANEL_HOOKS = ()
+
+classes = (ARCHEFX_PT_tools, ARCHEFX_PT_humgen_tab)

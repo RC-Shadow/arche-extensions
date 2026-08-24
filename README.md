@@ -65,10 +65,13 @@ falls back to surface transfer.
 
 ## Use
 
-Buttons appear under an **Arche Extensions** heading in
-**3D View ▸ Sidebar (N) ▸ HumGen** — clothing tools in the **Clothing** tab, the Rigify
-repair in **Pose**. If the add-on cannot attach to HumGen's panels it falls back to its
-own **Arche FX** tab. Everything is also in the F3 search menu.
+Press **N** in the 3D view. The buttons appear as an **Arche Extensions** panel in two
+places, so they are wherever you happen to be working:
+
+* inside the **HumGen** tab
+* in its own **Arche FX** tab
+
+Everything is also in the F3 search menu.
 
 **Adding a garment:** place it on the character with the **rig at rest pose** (the shape
 gets corrected to the A-pose, so a posed rig bakes in the wrong shape), select it, then
@@ -90,6 +93,13 @@ nothing moves — a perfectly working rig looks broken. Pose through `foot_ik.L`
 *"Low values may sometimes work better than high values."* The slider here is capped at 8.
 Diagnose a stuck bind by **memory growth, not CPU** — rising RAM with low CPU is runaway
 allocation that will never finish.
+
+**Do not try to `append()` into another add-on's panel.** `bpy.types.HG_PT_CLOTHING` is
+the very class you get by importing it, yet its `_draw_funcs` stays empty after `append()`,
+so the buttons never render and nothing reports an error. Register your own panel with
+`bl_category` set to their tab name instead. And do not create the second panel as a
+*subclass* of the first - registering it lets Blender clobber the base class's
+`bl_category`, silently moving the original tab.
 
 **Smooth one vertex group at a time** (`group_select_mode='ACTIVE'`). Smoothing with
 `'ALL'` collapsed influences to a median of 1 bone per vertex.

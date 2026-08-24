@@ -49,8 +49,36 @@ def find_hg_rigify_rig(obj):
     return None
 
 
+def humgen_rigs():
+    """Every HumGen character armature in the file, Rigify-converted or not."""
+    rigs = []
+    for obj in bpy.data.objects:
+        if obj.type != "ARMATURE" or obj.name.startswith("WGT-"):
+            continue
+        hg = getattr(obj, "HG", None)
+        if getattr(hg, "ishuman", False) or HG_RIGIFY_MARKER in obj.data:
+            rigs.append(obj)
+    return rigs
+
+
+def object_centre(obj):
+    if obj.type == "MESH" and len(obj.data.vertices):
+        total = obj.matrix_world @ obj.data.vertices[0].co
+        for vert in obj.data.vertices[1:]:
+            total = total + (obj.matrix_world @ vert.co)
+        return total / len(obj.data.vertices)
+    return obj.matrix_world.translation
+
+
 def find_rig(obj):
-    """Any armature driving obj - Rigify-converted or a stock HumGen rig."""
+    """Any armature driving obj - Rigify-converted or a stock HumGen rig.
+
+    Falls back to locating the character in the scene when the object is not linked to
+    it yet. A freshly imported garment has no parent and no armature modifier, so every
+    direct lookup misses and the binder used to refuse with "no armature found" even
+    though exactly one character was sitting right there. Rigify is NOT required - a
+    stock HumGen rig is found the same way.
+    """
     if obj is None:
         return None
     if obj.type == "ARMATURE":
@@ -60,7 +88,17 @@ def find_rig(obj):
             return mod.object
     if obj.parent is not None and obj.parent.type == "ARMATURE":
         return obj.parent
-    return find_hg_rigify_rig(obj)
+    rigify = find_hg_rigify_rig(obj)
+    if rigify is not None:
+        return rigify
+
+    rigs = humgen_rigs()
+    if len(rigs) == 1:
+        return rigs[0]
+    if rigs:
+        centre = object_centre(obj)
+        return min(rigs, key=lambda r: (r.matrix_world.translation - centre).length)
+    return None
 
 
 def find_hg_body(rig):

@@ -9,9 +9,9 @@
 bl_info = {
     "name": "Arche Extensions",
     "author": "Arche FX",
-    "version": (2, 0, 0),
+    "version": (2, 1, 1),
     "blender": (4, 0, 0),
-    "location": "3D View > Sidebar > HumGen > Clothing and Pose (or its own Arche FX tab)",
+    "location": "3D View > Sidebar > HumGen tab, and its own Arche FX tab",
     "description": (
         "Human Generator helpers: bind garment weights properly, turn any mesh into "
         "clothing, save a single garment to the library, remove clothing cleanly, and "
@@ -26,28 +26,21 @@ import bpy
 from . import clothing, rigify, ui
 
 _hooked = []
-_fallback = []
 
 
 def _hook_panels():
-    """Append into HumGen's panels, or register our own tab.
+    """Kept as a no-op hook point.
 
-    Deferred on a timer because add-on registration order is not guaranteed - HumGen
-    may not have registered its panels yet when we register.
+    Appending into HumGen's panels was tried and does not work: bpy.types.HG_PT_CLOTHING
+    is the same object you get by importing the class, yet its _draw_funcs stays empty
+    after append(). The buttons are registered as our own panels instead - one in the
+    Arche FX tab, one inside HumGen's tab - which nothing can wipe.
     """
-    for idname, draw_func in ui.PANEL_HOOKS:
-        panel = getattr(bpy.types, idname, None)
-        if panel is not None:
-            panel.append(draw_func)
-            _hooked.append((panel, draw_func))
-    if not _hooked:
-        bpy.utils.register_class(ui.ARCHEFX_PT_tools)
-        _fallback.append(True)
-    return None  # returning None unregisters the timer
+    return None
 
 
 def register():
-    for cls in rigify.classes + clothing.classes:
+    for cls in rigify.classes + clothing.classes + ui.classes:
         bpy.utils.register_class(cls)
     bpy.app.timers.register(_hook_panels, first_interval=0.5)
 
@@ -60,14 +53,7 @@ def unregister():
             pass
     _hooked.clear()
 
-    if _fallback:
-        try:
-            bpy.utils.unregister_class(ui.ARCHEFX_PT_tools)
-        except Exception:  # noqa: BLE001
-            pass
-        _fallback.clear()
-
-    for cls in reversed(rigify.classes + clothing.classes):
+    for cls in reversed(rigify.classes + clothing.classes + ui.classes):
         try:
             bpy.utils.unregister_class(cls)
         except Exception:  # noqa: BLE001
