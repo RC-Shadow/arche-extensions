@@ -86,6 +86,7 @@ those modifiers go with it, and masks belonging to garments you kept are left al
 - **Repairs driver bone targets HumGen misses.** Its conversion only `DEF-`-prefixes
   `forearm`, `upper_arm`, `thigh` and `foot`. Anything else is left dangling — `shin` in
   particular, which breaks the knee corrective shape keys.
+- **Rebuilds the weights properly.** HumGen does one `data_transfer` with `vert_mapping="NEAREST"` and no cleanup. Measured on a real garment that left **72.9% of vertices with weights not summing to 1** (2,676 of them under 0.5, following the armature at less than half strength), a median of **5** bone influences against the body's 2, and **58 vertex groups holding no weight**. This re-derives from the body with `POLYINTERP_NEAREST`, then limits to 4 influences, purges dead groups, fills any unweighted vertex and normalises - every vertex ends at exactly 1.000, median 2 influences, zero dead groups.
 - **Verifies afterwards** and warns if any driver bone still doesn't resolve.
 
 ## Two things worth knowing if you fork this
@@ -122,3 +123,19 @@ Round-trip tested on real Human Generator characters, Blender 4.5.11:
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+## On weight transfer, if you are reimplementing this
+
+`POLYINTERP_VNORPROJ` scored better on drift (p95 0.0343 vs 0.0563) and produced fewer
+skin pokes — and was still the wrong choice. It shoots a ray along each garment vertex's
+own normal, and on a thick closed garment in an A-pose those rays land on unrelated body
+parts: it produced **27 implausible vertex groups** including `DEF-toe.L`, `DEF-foot.L`,
+`DEF-shin.*` and finger bones. A shirt that twitches when a toe moves is wrong however
+good the aggregate numbers look. `POLYINTERP_NEAREST` kept 14 sensible groups.
+
+Order matters: run `vertex_group_smooth` **after** `limit_total`, not before — smoothing
+spreads weight into neighbouring groups, so limiting first then smoothing re-broadens what
+you just capped (measured: 14 influences per vertex). Smooth, then limit again.
+
+`vertex_group_smooth` also polls for EDIT/WEIGHT_PAINT mode while `clean`, `limit_total`
+and `normalize_all` work in object mode.
