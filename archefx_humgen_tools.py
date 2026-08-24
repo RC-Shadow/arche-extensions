@@ -9,12 +9,13 @@
 bl_info = {
     "name": "Arche FX - HumGen Tools",
     "author": "Arche FX",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (4, 0, 0),
-    "location": "3D View > Sidebar > HumGen > Pose > Rigify (or its own Arche FX tab)",
+    "location": "3D View > Sidebar > HumGen > Clothing and Pose (or its own Arche FX tab)",
     "description": (
-        "Human Generator helpers: bind clothing added after a Rigify conversion, "
-        "turn any mesh into clothing, and save a single garment to the library."
+        "Human Generator helpers: turn any mesh into clothing, save a single garment "
+        "to the library, remove clothing cleanly, and bind clothing added after a "
+        "Rigify conversion."
     ),
     "category": "Rigging",
     "doc_url": "https://github.com/RC-Shadow/archefx-humgen-tools",
@@ -457,32 +458,184 @@ class ARCHEFX_OT_save_clothing_to_library(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def find_garment_masks(obj):
+    """Names of the body MASK modifiers this garment brought with it.
+
+    HumGen records them as custom properties mask_0 .. mask_9 on the garment.
+    Reimplemented here (it is four lines) so removal needs no HumGen import.
+    """
+    masks = []
+    for i in range(10):
+        try:
+            masks.append(obj["mask_%d" % i])
+        except (KeyError, TypeError):
+            break
+    return masks
+
+
+def find_hg_body(rig):
+    """The HumGen body mesh under this rig, or None."""
+    if rig is None:
+        return None
+    for child in rig.children:
+        if child.type == "MESH" and "hg_body" in child:
+            return child
+    for child in rig.children:
+        if child.type == "MESH" and child.name.startswith("HG_Body"):
+            return child
+    return None
+
+
+class ARCHEFX_OT_remove_clothing(bpy.types.Operator):
+    """Remove clothing from this character, cleaning up its body masks"""
+
+    bl_idname = "archefx.remove_clothing"
+    bl_label = "Remove Clothing"
+    bl_description = (
+        "Delete clothing from this Human Generator character and remove the geometry "
+        "mask modifiers it added to the body, so no holes are left behind"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    mode: EnumProperty(
+        name="Remove",
+        items=[
+            ("selected", "Selected Garments", "Only the garments you have selected", 0),
+            ("outfit", "All Clothing", "Every garment, footwear kept", 1),
+            ("footwear", "All Footwear", "Footwear only", 2),
+            ("all", "Everything", "All clothing and footwear", 3),
+        ],
+        default="selected",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def _rig(self, context):
+        obj = context.active_object
+        if obj is None:
+            return None
+        if obj.type == "ARMATURE":
+            return obj
+        if obj.parent is not None and obj.parent.type == "ARMATURE":
+            return obj.parent
+        return find_hg_rigify_rig(obj)
+
+    def _targets(self, context):
+        rig = self._rig(context)
+        if rig is None:
+            return []
+        garments = [o for o in rig.children
+                    if o.type == "MESH" and ("cloth" in o or "shoe" in o)]
+        if self.mode == "selected":
+            chosen = [o for o in garments if o.select_get() or o is context.active_object]
+            return chosen
+        if self.mode == "outfit":
+            return [o for o in garments if "cloth" in o]
+        if self.mode == "footwear":
+            return [o for o in garments if "shoe" in o]
+        return garments
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "mode")
+        col.separator()
+        targets = self._targets(context)
+        if not targets:
+            box = col.box()
+            box.alert = True
+            box.label(text="Nothing to remove", icon="ERROR")
+            return
+        box = col.box()
+        box.label(text="Will delete %d object(s):" % len(targets), icon="TRASH")
+        for obj in targets:
+            box.label(text="   " + obj.name)
+
+    def execute(self, context):
+        rig = self._rig(context)
+        if rig is None:
+            self.report({"ERROR"}, "No Human Generator character found for the active object")
+            return {"CANCELLED"}
+
+        targets = self._targets(context)
+        if not targets:
+            self.report({"WARNING"}, "No clothing matched - nothing removed")
+            return {"CANCELLED"}
+
+        body = find_hg_body(rig)
+        mask_names = []
+        removed = []
+        for obj in targets:
+            mask_names.extend(find_garment_masks(obj))
+            removed.append(obj.name)
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+        dropped = 0
+        if body is not None:
+            for name in mask_names:
+                mod = body.modifiers.get(name)
+                if mod is not None and mod.type == "MASK":
+                    body.modifiers.remove(mod)
+                    dropped += 1
+
+        context.view_layer.objects.active = rig
+        bpy.context.view_layer.update()
+        self.report(
+            {"INFO"},
+            "Removed %d garment(s): %s | dropped %d body mask(s)"
+            % (len(removed), ", ".join(removed), dropped),
+        )
+        return {"FINISHED"}
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
-def _draw_tools(layout, context):
+def _draw_clothing_tools(layout, context):
     col = layout.column()
     col.scale_y = 1.35
     col.operator(ARCHEFX_OT_add_as_clothing.bl_idname, icon="MOD_CLOTH")
     col.operator(ARCHEFX_OT_save_clothing_to_library.bl_idname, icon="FILE_NEW")
     col.separator()
+    sub = col.column()
+    sub.alert = True
+    sub.operator(ARCHEFX_OT_remove_clothing.bl_idname, icon="TRASH")
+
+
+def _draw_rig_tools(layout, context):
+    col = layout.column()
+    col.scale_y = 1.35
     col.operator(ARCHEFX_OT_rebind_humgen_rigify.bl_idname, icon="GROUP_VERTEX")
 
 
-def _draw_in_humgen_panel(self, context):
-    """Appended to HumGen's pose panel. Wrapped so a failure here can never take
+def _draw_in_clothing_panel(self, context):
+    """Appended to HumGen's Clothing tab. Wrapped so a failure here can never take
     HumGen's own UI down with it."""
     try:
         box = self.layout.box()
         box.label(text="Arche FX", icon="TOOL_SETTINGS")
-        _draw_tools(box, context)
+        _draw_clothing_tools(box, context)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _draw_in_pose_panel(self, context):
+    """Appended to HumGen's Pose tab."""
+    try:
+        box = self.layout.box()
+        box.label(text="Arche FX", icon="TOOL_SETTINGS")
+        _draw_rig_tools(box, context)
     except Exception:  # noqa: BLE001
         pass
 
 
 class ARCHEFX_PT_tools(bpy.types.Panel):
-    """Fallback panel, registered only when HumGen's pose panel cannot be extended."""
+    """Fallback panel, registered only when HumGen's panels cannot be extended."""
 
     bl_idname = "ARCHEFX_PT_tools"
     bl_label = "HumGen Tools"
@@ -496,30 +649,42 @@ class ARCHEFX_PT_tools(bpy.types.Panel):
             self.layout.label(text="Select an object", icon="INFO")
             return
         self.layout.label(text=obj.name, icon="OBJECT_DATA")
-        _draw_tools(self.layout, context)
+        _draw_clothing_tools(self.layout, context)
+        self.layout.separator()
+        _draw_rig_tools(self.layout, context)
 
 
 _classes = (
     ARCHEFX_OT_rebind_humgen_rigify,
     ARCHEFX_OT_add_as_clothing,
     ARCHEFX_OT_save_clothing_to_library,
+    ARCHEFX_OT_remove_clothing,
 )
 
-_hooked_panel = []
+# (HumGen panel idname, draw function) - clothing tools go in the Clothing tab,
+# the rig tool in the Pose tab, each where it belongs.
+_PANEL_HOOKS = (
+    ("HG_PT_CLOTHING", _draw_in_clothing_panel),
+    ("HG_PT_POSE", _draw_in_pose_panel),
+)
+
+_hooked_panels = []
 _fallback_registered = []
 
 
-def _try_hook_humgen_panel():
-    """Add the buttons to HumGen's pose panel, or fall back to our own tab.
+def _try_hook_humgen_panels():
+    """Add the buttons to HumGen's panels, or fall back to our own tab.
 
     Deferred on a timer because add-on registration order is not guaranteed --
     HumGen may not have registered its panels yet when we register.
     """
-    panel = getattr(bpy.types, "HG_PT_POSE", None)
-    if panel is not None:
-        panel.append(_draw_in_humgen_panel)
-        _hooked_panel.append(panel)
-    else:
+    for idname, draw_func in _PANEL_HOOKS:
+        panel = getattr(bpy.types, idname, None)
+        if panel is not None:
+            panel.append(draw_func)
+            _hooked_panels.append((panel, draw_func))
+
+    if not _hooked_panels:
         bpy.utils.register_class(ARCHEFX_PT_tools)
         _fallback_registered.append(True)
     return None  # returning None unregisters the timer
@@ -528,16 +693,16 @@ def _try_hook_humgen_panel():
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
-    bpy.app.timers.register(_try_hook_humgen_panel, first_interval=0.5)
+    bpy.app.timers.register(_try_hook_humgen_panels, first_interval=0.5)
 
 
 def unregister():
-    for panel in _hooked_panel:
+    for panel, draw_func in _hooked_panels:
         try:
-            panel.remove(_draw_in_humgen_panel)
+            panel.remove(draw_func)
         except Exception:  # noqa: BLE001
             pass
-    _hooked_panel.clear()
+    _hooked_panels.clear()
 
     if _fallback_registered:
         try:

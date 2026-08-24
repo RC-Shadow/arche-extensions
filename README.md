@@ -1,16 +1,17 @@
 # Arche FX — HumGen Tools
 
-Three Blender buttons for [Human Generator](https://help.humgen3d.com/) characters,
+Four Blender buttons for [Human Generator](https://help.humgen3d.com/) characters,
 put where you actually need them.
 
 > **Not affiliated with Human Generator.** Contains no Human Generator code and needs
 > no modification to it.
 
-| Button | What it does |
-|---|---|
-| **Add to Character Clothing** | Turns any mesh you've placed on the character into real HumGen clothing — corrective shape keys, drivers, weight painting, the lot. |
-| **Add to Clothing Asset Library** | Saves **one** garment into your HumGen library so it loads onto any future character. |
-| **Re-bind Clothing to Rigify** | Fixes clothing that stopped following the rig after a Rigify conversion. |
+| Button | Tab | What it does |
+|---|---|---|
+| **Add to Character Clothing** | Clothing | Turns any mesh you've placed on the character into real HumGen clothing — corrective shape keys, drivers, weight painting, the lot. |
+| **Add to Clothing Asset Library** | Clothing | Saves **one** garment into your HumGen library so it loads onto any future character. |
+| **Remove Clothing** | Clothing | Deletes garments *and* the body mask modifiers they added, so you aren't left with holes in the body. |
+| **Re-bind Clothing to Rigify** | Pose | Fixes clothing that stopped following the rig after a Rigify conversion. |
 
 ---
 
@@ -18,8 +19,14 @@ put where you actually need them.
 
 **Custom clothing.** HumGen can already do this, but it's in the Content tab, several
 clicks from where you're working, and its save function bundles your *whole outfit* into
-one library entry. These buttons sit in the Pose panel and default to saving the single
+one library entry. These buttons sit in the Clothing tab and default to saving the single
 garment you selected.
+
+**Removing clothing.** HumGen's delete button lives inside the clothing *material*
+sub-panel, which you only reach after drilling into one garment. This puts it in the
+Clothing tab, and adds modes for removing all clothing, all footwear, or everything.
+Either way the body's mask modifiers go with it — miss that and the body keeps the holes
+the garment was hiding.
 
 **Rigify re-bind.** HumGen's Rigify conversion renames every vertex group to the `DEF-`
 convention, then rebinds the rig's children — but only the children that exist **at
@@ -38,9 +45,10 @@ Blender 4.0+. If you had v1.0.0 (`archefx_humgen_rebind.py`) installed, remove i
 
 ## Use
 
-The buttons appear under an **Arche FX** heading in
-**3D View ▸ Sidebar (N) ▸ HumGen ▸ Pose**, or in their own **Arche FX** tab if the add-on
-can't attach to HumGen's panel. All three are also in the F3 search menu.
+The buttons appear under an **Arche FX** heading in **3D View ▸ Sidebar (N) ▸ HumGen**:
+the three clothing tools in the **Clothing** tab, the re-bind in the **Pose** tab. If the
+add-on cannot attach to HumGen's panels it falls back to its own **Arche FX** tab. All
+four are also in the F3 search menu.
 
 ### Adding a custom garment
 
@@ -50,13 +58,25 @@ can't attach to HumGen's panel. All three are also in the F3 search menu.
 3. Optionally → **Add to Clothing Asset Library** to make it reusable.
 
 Add clothing **before** converting to Rigify where you can. If you forget, that's what
-the third button is for.
+the Pose tab button is for.
+
+### Removing a garment
+
+Select it → **Remove Clothing**. The dialog lists exactly what will be deleted before you
+confirm. Modes: *Selected Garments* (default), *All Clothing*, *All Footwear*,
+*Everything*.
+
+Each garment records the body masks it added as `mask_0`…`mask_9` custom properties;
+those modifiers go with it, and masks belonging to garments you kept are left alone.
 
 ## What it does that HumGen doesn't
 
 - **Saves a single garment.** HumGen's save writes every object tagged as clothing as one
   outfit. *Only This Garment* (on by default) temporarily drops the tag from the others,
   saves, and restores them exactly.
+- **Puts removal where you can reach it.** HumGen's delete button is inside the clothing
+  *material* sub-panel, one garment at a time. This is in the Clothing tab with bulk
+  modes, and always cleans up the body masks.
 - **Preserves your mask settings.** HumGen's weight painting switches every body MASK
   modifier back **on** afterwards, whatever you had. This snapshots and restores them.
 - **Forces a depsgraph update before the weight transfer.** HumGen disables the body's
@@ -91,6 +111,10 @@ Round-trip tested on real Human Generator characters, Blender 4.5.11:
   known-good garment's 0.1569 m. Confirmed independently in the GUI at a **1.39 ratio**
   against a reference shirt.
 - **Library save:** one `.blend` written, sibling clothing tags restored exactly.
+- **Removal:** removing the jeans dropped `mask_lower_long` and kept `mask_torso`,
+  `mask_arms_long` and `mask_foot`; other garments untouched; bulk modes cleared
+  everything with no masks left over; the body mesh survived; a second run cancels
+  cleanly rather than erroring.
 - **Re-bind:** binding broken exactly as HumGen leaves late-added clothing → deformation
   died → after re-bind, 63/63 vertex groups restored, drivers byte-identical, deformation
   back to baseline within 1e-6. Idempotent.
