@@ -64,17 +64,50 @@ class ARCHEFX_OT_bind_weights(bpy.types.Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    use_guard: BoolProperty(
-        name="Body Collision Guard",
-        description="Shrinkwrap modifier after the armature that keeps every vertex "
-                    "outside the body. This is what removes clipping - weights alone "
-                    "cannot fix a garment modelled inside the skin",
-        default=True,
+    clip_fix: EnumProperty(
+        name="Clipping Fix",
+        description="How skin is kept from showing through the garment",
+        items=[
+            ("mask", "Hide skin under cloth (mask)",
+             "MASK modifier on the body over the skin this garment covers, with a "
+             "margin inside its open edges. The garment mesh is never touched - what "
+             "HumGen's own library garments do", 0),
+            ("guard", "Push cloth outside skin (shrinkwrap)",
+             "Shrinkwrap after the armature. Works on loose garments; on a dense "
+             "body-hugging mesh it visibly deforms the cloth", 1),
+            ("none", "None", "Weights only", 2),
+        ],
+        default="mask",
     )
     guard_offset: bpy.props.FloatProperty(
         name="Guard Offset",
         description="How far above the skin the garment is held",
         default=0.004, min=0.001, max=0.02, step=0.1, precision=3, unit="LENGTH",
+    )
+    mask_depth: bpy.props.FloatProperty(
+        name="Mask Depth",
+        description="Skin this far under the cloth counts as covered",
+        default=0.03, min=0.005, max=0.10, step=0.5, precision=3, unit="LENGTH",
+    )
+    mask_edge_margin: bpy.props.FloatProperty(
+        name="Edge Margin",
+        description="Skin within this distance of the garment's open edges (collar, "
+                    "cuffs, hem) stays visible, so no gap opens past the cloth",
+        default=0.01, min=0.0, max=0.10, step=0.5, precision=3, unit="LENGTH",
+    )
+    use_corrective_keys: BoolProperty(
+        name="Copy Body Corrective Keys",
+        description="Give the garment the body's pose-driven corrective shape keys "
+                    "(elbow, shoulder, leg) with the same drivers, so it bulges with the "
+                    "skin instead of letting it through",
+        default=True,
+    )
+    prefer_body_weights: BoolProperty(
+        name="Body Weights for Hugging Garments",
+        description="When the garment sits on the skin (median distance < 1.5 cm), copy "
+                    "the body's own weights first - identical deformation, nothing to "
+                    "clip. Otherwise ARP / bone heat",
+        default=True,
     )
     use_proximity: BoolProperty(
         name="Drop Far-Away Bones",
@@ -124,10 +157,15 @@ class ARCHEFX_OT_bind_weights(bpy.types.Operator):
             box.label(text="Auto-Rig Pro not found", icon="INFO")
             box.label(text="Using bone heat, then surface transfer.")
         col.separator()
-        col.prop(self, "use_guard")
+        col.prop(self, "prefer_body_weights")
+        col.prop(self, "use_corrective_keys")
+        col.prop(self, "clip_fix")
         sub = col.column()
-        sub.enabled = self.use_guard
-        sub.prop(self, "guard_offset")
+        if self.clip_fix == "guard":
+            sub.prop(self, "guard_offset")
+        elif self.clip_fix == "mask":
+            sub.prop(self, "mask_depth")
+            sub.prop(self, "mask_edge_margin")
         col.prop(self, "use_proximity")
         col.separator()
         col.prop(self, "use_debleed")
@@ -157,8 +195,12 @@ class ARCHEFX_OT_bind_weights(bpy.types.Operator):
                         debleed_threshold=self.debleed_threshold,
                         use_debleed=self.use_debleed,
                         use_proximity=self.use_proximity,
-                        use_guard=self.use_guard,
+                        clip_fix=self.clip_fix,
                         guard_offset=self.guard_offset,
+                        mask_depth=self.mask_depth,
+                        mask_edge_margin=self.mask_edge_margin,
+                        prefer_body_weights=self.prefer_body_weights,
+                        use_corrective_keys=self.use_corrective_keys,
                         verify_frames=self.verify_frames,
                     )
         except Exception as exc:  # noqa: BLE001
@@ -176,6 +218,17 @@ def format_report(report, body):
     msg = ("%s bind %.1fs | %d groups | %d unweighted | bones/vert med %d max %d"
            % (report["engine"], report["seconds"], report["groups"],
               report["unweighted"], report["bones_med"], report["bones_max"]))
+    if report.get("hugs_body"):
+        msg += " | hugs the body"
+    if report.get("clip_fix") == "mask":
+        msg += " | masked %d skin verts" % report.get("masked", 0)
+    elif report.get("clip_fix") == "guard":
+        msg += " | shrinkwrap guard"
+    if report.get("corrective_keys"):
+        msg += " | %d corrective keys" % len(report["corrective_keys"])
+    if report.get("warn_smooth"):
+        msg += (" | WARNING: Corrective Smooth '%s' pulls the cloth off the skin - "
+                "lower its factor or disable it" % report["warn_smooth"])
     far = report.get("far_purged")
     if far:
         msg += " | dropped far bones: " + ", ".join(far)
@@ -188,6 +241,65 @@ def format_report(report, body):
                 % (report["clip_frames"], report["clip_mean"], report["clip_max"],
                    report["clip_max_frame"], report["clip_worst_cm"]))
     return msg
+
+
+class ARCHEFX_OT_mask_skin(bpy.types.Operator):
+    """Hide the body's skin under this garment (no re-bind, weights untouched)"""
+
+    bl_idname = "archefx.mask_skin"
+    bl_label = "Mask Skin Under Garment"
+    bl_description = (
+        "Add a MASK modifier on the body hiding the skin this garment covers, with a "
+        "margin inside the garment's open edges. Removes this garment's shrinkwrap "
+        "guard if it has one. Weights are not changed. Safe to run more than once"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    mask_depth: bpy.props.FloatProperty(
+        name="Depth Under Cloth", default=0.04, min=0.005, max=0.15, step=0.5,
+        precision=3, unit="LENGTH",
+        description="Skin this far beneath the cloth counts as covered")
+    poke_depth: bpy.props.FloatProperty(
+        name="Buried Panel Reach", default=0.08, min=0.0, max=0.20, step=0.5,
+        precision=3, unit="LENGTH",
+        description="Skin above a garment panel modelled up to this far INSIDE the "
+                    "body also counts as covered")
+    mask_edge_margin: bpy.props.FloatProperty(
+        name="Edge Margin", default=0.01, min=0.0, max=0.10, step=0.5, precision=3,
+        unit="LENGTH",
+        description="Skin within this distance of the garment's open edges (collar, "
+                    "cuffs, hem) stays visible")
+    remove_guard: BoolProperty(name="Remove Shrinkwrap Guard", default=True)
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == "MESH"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=340)
+
+    def execute(self, context):
+        obj = context.active_object
+        rig = common.find_rig(obj)
+        body = common.find_body(rig, exclude=obj) if rig else None
+        if body is None:
+            self.report({"ERROR"}, "No body mesh found under this garment's rig")
+            return {"CANCELLED"}
+        if self.remove_guard:
+            weights.remove_guard(obj)
+        with common.preserve_pose(rig) as stash:
+            if stash:
+                common.clear_pose(rig)
+            count = weights.add_body_mask(obj, body, depth=self.mask_depth,
+                                          poke_depth=self.poke_depth,
+                                          edge_margin=self.mask_edge_margin)
+        if not count:
+            self.report({"WARNING"}, "No skin found under '%s'" % obj.name)
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Masked %d skin vertices under '%s' on %s"
+                    % (count, obj.name, body.name))
+        return {"FINISHED"}
 
 
 class ARCHEFX_OT_add_as_clothing(bpy.types.Operator):
@@ -530,6 +642,7 @@ class ARCHEFX_OT_remove_clothing(bpy.types.Operator):
 
 classes = (
     ARCHEFX_OT_bind_weights,
+    ARCHEFX_OT_mask_skin,
     ARCHEFX_OT_add_as_clothing,
     ARCHEFX_OT_save_clothing_to_library,
     ARCHEFX_OT_remove_clothing,

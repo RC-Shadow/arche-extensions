@@ -9,7 +9,7 @@
 bl_info = {
     "name": "Arche Extensions",
     "author": "Arche FX",
-    "version": (2, 2, 0),
+    "version": (2, 3, 0),
     "blender": (4, 0, 0),
     "location": "3D View > Sidebar > HumGen tab, and its own Arche FX tab",
     "description": (

@@ -374,6 +374,222 @@ def add_guard(obj, body, offset=0.004):
     return mod
 
 
+MASK_PREFIX = "ArcheFX_Mask_"
+
+
+def garment_boundary(obj):
+    """World-space points along the garment's open edges (collar, cuffs, hem)."""
+    from collections import Counter
+    count = Counter()
+    for poly in obj.data.polygons:
+        for key in poly.edge_keys:
+            count[key] += 1
+    verts = obj.data.vertices
+    pts = []
+    for (a, b), n in count.items():
+        if n == 1:
+            pa, pb = obj.matrix_world @ verts[a].co, obj.matrix_world @ verts[b].co
+            pts.append(pa)
+            pts.append((pa + pb) * 0.5)
+    return pts
+
+
+def hugs_body(obj, body, limit=0.015):
+    """True when the garment follows the skin closely (median rest distance < limit):
+    then the body's own weights are the best possible weights for it."""
+    from mathutils.bvhtree import BVHTree
+    coords = common.rest_coords(body)
+    bvh = BVHTree.FromPolygons([c.to_tuple() for c in coords],
+                               [tuple(p.vertices) for p in body.data.polygons],
+                               all_triangles=False)
+    dists = []
+    for vert in obj.data.vertices:
+        loc, _n, _i, dist = bvh.find_nearest(obj.matrix_world @ vert.co)
+        if loc is not None:
+            dists.append(dist)
+    if not dists:
+        return False
+    dists.sort()
+    return dists[len(dists) // 2] < limit
+
+
+def add_body_mask(obj, body, depth=0.04, poke_depth=0.08, edge_margin=0.01, grow=1):
+    """Hide the skin under the garment - the fix that never touches the garment mesh.
+
+    The Shrinkwrap guard pushed a dense body-hugging shirt around ("destroyed mesh");
+    with it off, any hand raise showed skin through the cloth. This is what Human
+    Generator's own library garments do instead: a MASK modifier on the body over a
+    vertex group of the covered skin. A skin vertex is covered when a ray along its
+    normal meets the garment within `depth` in FRONT of it (skin under the cloth), or
+    within `poke_depth` BEHIND it (a panel modelled inside the body - the TSA shirt
+    sat 6.3 cm deep, which a nearest-point test never reached). Hits within
+    `edge_margin` of the garment's open edges (collar, cuffs, hem) do not count, so
+    the cut line always sits under the cloth and no ring of skin is lost past it.
+    `grow` rings of neighbours close pinholes. Idempotent per garment. Also writes
+    obj["mask_N"] the way HumGen does, so Remove Clothing cleans it up.
+    """
+    from mathutils.bvhtree import BVHTree
+    from mathutils.kdtree import KDTree
+
+    if body is None or body is obj or not obj.data.polygons:
+        return None
+    verts = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    bvh = BVHTree.FromPolygons([v.to_tuple() for v in verts],
+                               [tuple(p.vertices) for p in obj.data.polygons],
+                               all_triangles=False)
+    edge_pts = garment_boundary(obj)
+    edges = None
+    if edge_pts:
+        edges = KDTree(len(edge_pts))
+        for i, p in enumerate(edge_pts):
+            edges.insert(p, i)
+        edges.balance()
+
+    coords = common.rest_coords(body)
+    rot = body.matrix_world.to_3x3()
+    normals = [(rot @ v.normal).normalized() for v in body.data.vertices]
+
+    def covered_at(i):
+        p, n = coords[i], normals[i]
+        for direction, reach in ((n, depth), (-n, poke_depth)):
+            loc, _hn, _idx, dist = bvh.ray_cast(p, direction, reach)
+            if loc is None:
+                continue
+            if edges is not None and edges.find(loc)[2] < edge_margin:
+                continue
+            return True
+        return False
+
+    covered = {i for i in range(len(coords)) if covered_at(i)}
+    if not covered:
+        return None
+
+    if grow > 0:
+        neighbours = {}
+        for edge in body.data.edges:
+            a, b = edge.vertices
+            neighbours.setdefault(a, []).append(b)
+            neighbours.setdefault(b, []).append(a)
+        for _ in range(grow):
+            ring = set()
+            for i in covered:
+                for j in neighbours.get(i, ()):
+                    if j in covered:
+                        continue
+                    # a neighbour whose ray misses but that sits right by the cloth
+                    loc, _hn, _idx, dist = bvh.find_nearest(coords[j])
+                    if loc is not None and dist <= 0.01 and (
+                            edges is None or edges.find(loc)[2] >= edge_margin):
+                        ring.add(j)
+            covered |= ring
+
+    name = MASK_PREFIX + obj.name
+    group = body.vertex_groups.get(name)
+    if group is None:
+        group = body.vertex_groups.new(name=name)
+    else:
+        group.remove([v.index for v in body.data.vertices])
+    group.add(sorted(covered), 1.0, "REPLACE")
+
+    mod = body.modifiers.get(name)
+    if mod is None or mod.type != "MASK":
+        if mod is not None:
+            body.modifiers.remove(mod)
+        mod = body.modifiers.new(name, "MASK")
+    mod.vertex_group = name
+    mod.invert_vertex_group = True
+    mod.show_viewport = mod.show_render = True
+    mod.show_expanded = False
+    # HumGen-style bookkeeping so Remove Clothing (ours and HumGen's) drops it again
+    existing = common.find_garment_masks(obj)
+    if name not in existing:
+        obj["mask_%d" % len(existing)] = name
+    return len(covered)
+
+
+def add_corrective_keys(obj, body, rig):
+    """Give the garment the body's pose-driven corrective shape keys.
+
+    HumGen's skin bulges at elbows and shoulders through driven keys
+    (cor_ElbowBend_Lt, cor_ShoulderSideRaise_Lt...). A garment without them keeps its
+    rest shape there, and identical weights still leave 150-250 vertices of skin
+    through the sleeve on an elbow bend. This is what HumGen does for its own library
+    garments: every driven body key becomes a garment key holding the delta of the
+    nearest body vertex, with the same driver pointed at the rig. Keys the garment
+    already has are refreshed. Returns the key names added.
+    """
+    from mathutils.kdtree import KDTree
+
+    keys = getattr(body.data, "shape_keys", None)
+    if keys is None or keys.animation_data is None or not keys.animation_data.drivers:
+        return []
+    driven = {}
+    for fcurve in keys.animation_data.drivers:
+        path = fcurve.data_path
+        if path.startswith('key_blocks["') and path.endswith('"].value'):
+            driven[path[len('key_blocks["'):-len('"].value')]] = fcurve
+    if not driven:
+        return []
+
+    coords = common.rest_coords(body)
+    tree = KDTree(len(coords))
+    for i, co in enumerate(coords):
+        tree.insert(co, i)
+    tree.balance()
+    nearest = [tree.find(obj.matrix_world @ v.co)[1] for v in obj.data.vertices]
+    inv = obj.matrix_world.to_3x3().inverted() @ body.matrix_world.to_3x3()
+
+    if obj.data.shape_keys is None:
+        obj.shape_key_add(name="Basis", from_mix=False)
+    gkeys = obj.data.shape_keys
+    ref = keys.reference_key
+    added = []
+    for name, fcurve in driven.items():
+        src_key = keys.key_blocks.get(name)
+        if src_key is None:
+            continue
+        base = src_key.relative_key.data if src_key.relative_key else ref.data
+        block = gkeys.key_blocks.get(name) or obj.shape_key_add(name=name, from_mix=False)
+        block.slider_min, block.slider_max = src_key.slider_min, src_key.slider_max
+        for i, vert in enumerate(obj.data.vertices):
+            j = nearest[i]
+            block.data[i].co = vert.co + inv @ (src_key.data[j].co - base[j].co)
+        # driver: same expression and variables, retargeted at the rig
+        if gkeys.animation_data and gkeys.animation_data.drivers:
+            for old in [f for f in gkeys.animation_data.drivers
+                        if f.data_path == 'key_blocks["%s"].value' % name]:
+                gkeys.animation_data.drivers.remove(old)
+        new = block.driver_add("value")
+        new.driver.type = fcurve.driver.type
+        new.driver.expression = fcurve.driver.expression
+        for var in fcurve.driver.variables:
+            nv = new.driver.variables.new()
+            nv.name, nv.type = var.name, var.type
+            for src_t, dst_t in zip(var.targets, nv.targets):
+                dst_t.id = rig if getattr(src_t.id, "type", None) == "ARMATURE" else src_t.id
+                dst_t.bone_target = src_t.bone_target
+                dst_t.transform_type = src_t.transform_type
+                dst_t.transform_space = src_t.transform_space
+                dst_t.rotation_mode = src_t.rotation_mode
+                if var.type == "SINGLE_PROP":
+                    dst_t.data_path = src_t.data_path
+        added.append(name)
+    return added
+
+
+def remove_body_mask(obj, body):
+    name = MASK_PREFIX + obj.name
+    if body is None:
+        return False
+    mod = body.modifiers.get(name)
+    if mod is not None:
+        body.modifiers.remove(mod)
+    group = body.vertex_groups.get(name)
+    if group is not None:
+        body.vertex_groups.remove(group)
+    return mod is not None
+
+
 def remove_guard(obj):
     mod = obj.modifiers.get(GUARD_NAME)
     if mod is not None:
@@ -382,9 +598,32 @@ def remove_guard(obj):
     return False
 
 
+def hidden_polygons(body):
+    """Polygon indices the body's MASK modifiers remove (a face goes when any of its
+    vertices is in an inverted mask group / outside a plain one)."""
+    hidden = set()
+    for mod in body.modifiers:
+        if mod.type != "MASK" or not mod.show_viewport or not mod.vertex_group:
+            continue
+        group = body.vertex_groups.get(mod.vertex_group)
+        if group is None:
+            continue
+        members = set()
+        for vert in body.data.vertices:
+            if any(g.group == group.index and g.weight > 0.0 for g in vert.groups):
+                members.add(vert.index)
+        for poly in body.data.polygons:
+            inside = [v in members for v in poly.vertices]
+            if (any(inside) if mod.invert_vertex_group else not all(inside)):
+                hidden.add(poly.index)
+    return hidden
+
+
 def verify(obj, body, frames=None, tolerance=0.002):
-    """Count garment vertices inside the body on EVERY frame - sampling has passed
-    animations that were visibly broken in between."""
+    """Count garment vertices inside VISIBLE skin on EVERY frame - sampling has passed
+    animations that were visibly broken in between. Skin hidden by a body mask is
+    measured with the mask off but ignored, so a vertex over masked skin is not judged
+    against some unrelated visible face."""
     from mathutils.bvhtree import BVHTree
 
     scene = bpy.context.scene
@@ -392,30 +631,35 @@ def verify(obj, body, frames=None, tolerance=0.002):
     if frames is None:
         frames = range(scene.frame_start, scene.frame_end + 1)
     current = scene.frame_current
+    hidden = hidden_polygons(body)
     counts, worst, worst_frame = [], 0.0, None
     try:
-        for frame in frames:
-            scene.frame_set(frame)
-            depsgraph.update()
-            body_eval = body.evaluated_get(depsgraph)
-            tree = BVHTree.FromObject(body_eval, depsgraph)
-            world = body.matrix_world
-            inverse, rotation = world.inverted(), world.to_3x3()
-            garment = obj.evaluated_get(depsgraph)
-            mesh = garment.to_mesh()
-            inside = 0
-            for vert in mesh.vertices:
-                point = garment.matrix_world @ vert.co
-                loc, normal, _index, _dist = tree.find_nearest(inverse @ point)
-                if loc is None:
-                    continue
-                depth = -(point - (world @ loc)).dot((rotation @ normal).normalized())
-                if depth > tolerance:
-                    inside += 1
-                    if depth > worst:
-                        worst, worst_frame = depth, frame
-            garment.to_mesh_clear()
-            counts.append(inside)
+        with common.preserve_masks(body, disable=True):
+            for frame in frames:
+                scene.frame_set(frame)
+                depsgraph.update()
+                body_eval = body.evaluated_get(depsgraph)
+                same_topology = len(body_eval.data.polygons) == len(body.data.polygons)
+                tree = BVHTree.FromObject(body_eval, depsgraph)
+                world = body.matrix_world
+                inverse, rotation = world.inverted(), world.to_3x3()
+                garment = obj.evaluated_get(depsgraph)
+                mesh = garment.to_mesh()
+                inside = 0
+                for vert in mesh.vertices:
+                    point = garment.matrix_world @ vert.co
+                    loc, normal, index, _dist = tree.find_nearest(inverse @ point)
+                    if loc is None:
+                        continue
+                    if hidden and same_topology and index in hidden:
+                        continue
+                    depth = -(point - (world @ loc)).dot((rotation @ normal).normalized())
+                    if depth > tolerance:
+                        inside += 1
+                        if depth > worst:
+                            worst, worst_frame = depth, frame
+                garment.to_mesh_clear()
+                counts.append(inside)
     finally:
         scene.frame_set(current)
     if not counts:
@@ -435,23 +679,34 @@ def verify(obj, body, frames=None, tolerance=0.002):
 def bind_garment(obj, rig, body, resolution=VOXEL_RES_DEFAULT,
                  debleed_threshold=0.10, use_debleed=True,
                  use_proximity=True, proximity_margin=None,
-                 use_guard=True, guard_offset=0.004, verify_frames=False):
+                 clip_fix="mask", guard_offset=0.004, mask_depth=0.03,
+                 mask_edge_margin=0.01, prefer_body_weights=True, verify_frames=False,
+                 use_guard=None, use_corrective_keys=True):
     """Full pipeline. Returns a dict of what happened, for the operator to report.
 
-    Engine ladder: Auto-Rig Pro voxel -> Blender bone heat -> surface transfer from
-    the body. The first engine whose result is usable (some groups, under 10 % of
-    vertices unweighted before the fill pass) wins; the rest are recorded in
-    report["tried"].
+    Engine ladder: (body weights first when the garment hugs the skin and
+    `prefer_body_weights`) -> Auto-Rig Pro voxel -> Blender bone heat -> surface
+    transfer. The first engine whose result is usable (under 10 % of vertices
+    unweighted before the fill pass) wins; the rest are recorded in report["tried"].
+    clip_fix: "mask" (hide skin under the cloth - default), "guard" (Shrinkwrap),
+    "none". A previous fix of the other kind is removed.
     """
+    if use_guard is not None:                      # old keyword
+        clip_fix = "guard" if use_guard else "none"
     deform = common.deform_bone_names(rig)
     report = {"engine": None, "seconds": 0.0, "tried": []}
     vert_count = max(1, len(obj.data.vertices))
 
     engines = []
+    hugging = body is not None and body is not obj and prefer_body_weights and hugs_body(obj, body)
+    report["hugs_body"] = hugging
+    if hugging:
+        # identical deformation to the skin it sits on: nothing can beat it
+        engines.append(("body", lambda: surface_bind(obj, body, rig) or 0.0))
     if arp_available():
         engines.append(("arp", lambda: arp_bind(obj, rig, resolution)))
     engines.append(("heat", lambda: heat_bind(obj, rig)))
-    if body is not None:
+    if body is not None and not hugging:
         engines.append(("surface", lambda: surface_bind(obj, body, rig) or 0.0))
 
     with common.weights_guarded(obj):
@@ -490,9 +745,25 @@ def bind_garment(obj, rig, body, resolution=VOXEL_RES_DEFAULT,
         bpy.context.view_layer.update()
 
     if body is not None and body is not obj:
-        if use_guard:
+        if clip_fix == "guard":
+            remove_body_mask(obj, body)
             add_guard(obj, body, guard_offset)
-        report["guard"] = use_guard
+        elif clip_fix == "mask":
+            remove_guard(obj)
+            report["masked"] = add_body_mask(obj, body, depth=mask_depth,
+                                             edge_margin=mask_edge_margin) or 0
+        else:
+            remove_guard(obj)
+            remove_body_mask(obj, body)
+        report["clip_fix"] = clip_fix
+        if use_corrective_keys:
+            report["corrective_keys"] = add_corrective_keys(obj, body, rig)
+        smooth = [m for m in obj.modifiers if m.type == "CORRECTIVE_SMOOTH"
+                  and m.show_viewport and m.factor > 0.5]
+        if smooth:
+            # measured: factor 1.0 x 20 iterations pulled sleeves 3 cm off the skin on
+            # every arm raise (256 verts through the cloth; 10 with it off)
+            report["warn_smooth"] = ", ".join(m.name for m in smooth)
     report.update(audit(obj, rig))
     if verify_frames and body is not None and body is not obj:
         report.update(verify(obj, body))

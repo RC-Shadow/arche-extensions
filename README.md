@@ -8,7 +8,8 @@ garment weights properly, manage clothing, and repair what a Rigify conversion b
 
 | Button | What it does |
 |---|---|
-| **Bind Weights** | Skins a garment to the character (Auto-Rig Pro voxel bind, or Blender bone heat without ARP), cleans up, adds a body-collision guard, and verifies every frame. **Never touches body masks.** |
+| **Bind Weights** | Skins a garment to the character (body weights for hugging garments, else Auto-Rig Pro voxel bind, else Blender bone heat), cleans up, hides the skin under the cloth, copies the body's corrective shape keys, and verifies every frame. |
+| **Mask Skin Under Garment** | Just the skin mask, on a garment whose weights you already like. Removes a shrinkwrap guard if one is there. |
 | **Add to Character Clothing** | Tags a mesh placed on the character as HumGen clothing and binds it. Optional HumGen fitting for garments built on the default body. |
 | **Add to Clothing Asset Library** | Saves **one** garment to your library, not the whole outfit. |
 | **Remove Clothing** | Deletes garments *and* the body masks they added, so no holes are left behind. |
@@ -39,10 +40,12 @@ that surface transfer never touches.
 
 ## What the bind does
 
-1. **Engine ladder** — Auto-Rig Pro pseudo-voxel bind (resolution slider, clamped 3–8,
-   default 7) → Blender bone-heat automatic weights → `POLYINTERP_NEAREST` surface
-   transfer from the body. The first engine that leaves under 10 % of vertices
-   unweighted wins. ARP and HumGen are both optional.
+1. **Engine ladder** — when the garment hugs the skin (median rest distance under
+   1.5 cm) the body's own weights are copied first: identical deformation, nothing to
+   disagree. Otherwise Auto-Rig Pro pseudo-voxel bind (resolution slider, clamped 3–8,
+   default 7) → Blender bone-heat automatic weights → surface transfer. The first
+   engine that leaves under 10 % of vertices unweighted wins. ARP and HumGen are both
+   optional.
 2. **Clean up** — cap influences at 4, drop dead and non-deform groups, fill any
    unweighted vertex, normalise every vertex to exactly 1.0.
 3. **Drop far-away bones by proximity, never by name** — a bone stays only if the skin
@@ -51,14 +54,26 @@ that surface transfer never touches.
    and, matching `ear`, `DEF-forearm` off every sleeve.
 4. **Remove arm bleed from the chest** — otherwise the chest sloshes when an arm moves.
 5. **Soften the seam** with a per-group smooth.
-6. **Body-collision guard** — a Shrinkwrap (*outside surface*, 4 mm) targeting the body,
-   placed **last** in the modifier stack. This is what removes clipping: a shirt modelled
-   partly inside the skin had ~800 vertices inside the body per frame with *every*
-   weighting engine (769 with no rig at all). With the guard: mean 3, max 21, worst
-   0.4 cm over 123 frames. Weights cannot fix geometry; this can.
-7. **Verify every frame** — vertices inside the body counted on each frame of the scene
-   range and reported in the status bar. Sampled checks have passed animations that
-   were broken in between.
+6. **Hide the skin under the cloth** (default) — a MASK modifier on the body over the
+   skin the garment covers. Coverage is found by ray casts from each skin vertex: cloth
+   up to 4 cm in front of it, or a panel buried up to 8 cm inside the body (a shirt
+   sat 6.3 cm deep — a nearest-point test never reaches that). Hits within 1 cm of the
+   garment's open edges don't count, so the cut line always sits under the cloth.
+   The garment mesh is never touched. This is what HumGen's own library garments do.
+   *Alternative:* a Shrinkwrap guard (*outside surface*, 4 mm, last in the stack) —
+   fine on loose garments, visibly deforms a dense body-hugging one.
+7. **Copy the body's corrective shape keys** — HumGen's skin bulges at elbows and
+   shoulders through pose-driven keys (`cor_ElbowBend_Lt`…). Every driven body key
+   becomes a garment key (nearest-vertex delta) with the same driver on the rig.
+   Without them identical weights still let 150–250 vertices of skin through a sleeve
+   on an elbow bend.
+8. **Verify every frame** — garment vertices inside *visible* skin counted on each
+   frame of the scene range and reported in the status bar. Sampled checks have
+   passed animations that were broken in between.
+
+A **Corrective Smooth** modifier on the garment with factor > 0.5 is reported as a
+warning: at factor 1.0 × 20 iterations it pulled sleeves 3 cm off the skin on every arm
+raise (256 vertices through the cloth; 10 with it off).
 
 ## Install
 
@@ -145,6 +160,11 @@ Against a real character, Blender 4.5.11:
 - **Shoe, 183 verts** — `DEF-foot.L` + `DEF-toe.L`, guard after Subsurf: mean 0, max 5,
   worst 0.4 cm (guard placed before Subsurf: 164)
 - **Without ARP** — bone-heat path binds the same shirt in 0.4 s with equivalent results
+- **Dense shirt, 31,284 verts, on a HumGen male** (v2.3, mask instead of guard) —
+  vertices through visible skin over seven test poses: rest 3,326 → 10, arms side
+  5,549 → 10, arms up 6,616 → 10, arms front 7,004 → 11, torso twist 3,489 → 14. The
+  two poses that keep a residual are self-intersecting (forearm pressed 100° into the
+  chest; a 45° bow folding the hips under the trousers).
 - **Preservation** — body masks, shape keys, drivers, `cloth` tag, `mask_0` and the
   user's pose unchanged after a bind; the guard is the only modifier added
 

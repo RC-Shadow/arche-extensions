@@ -19,6 +19,7 @@ def draw_clothing_tools(layout, context):
     col = layout.column()
     col.scale_y = 1.35
     col.operator(ARCHEFX_OT_bind_weights.bl_idname, icon="MOD_VERTEX_WEIGHT")
+    col.operator("archefx.mask_skin", icon="MOD_MASK")
     col.separator()
     col.operator(ARCHEFX_OT_add_as_clothing.bl_idname, icon="MOD_CLOTH")
     col.operator(ARCHEFX_OT_save_clothing_to_library.bl_idname, icon="FILE_NEW")
@@ -54,7 +55,12 @@ def draw_body(layout, context):
     else:
         layout.label(text="rig: " + rig.name, icon="ARMATURE_DATA")
 
-    from .weights import arp_available, GUARD_NAME
+    from .weights import arp_available, GUARD_NAME, MASK_PREFIX
+    if obj.type == "MESH":
+        masks = [k for k in obj.keys() if k.startswith("mask_")
+                 and str(obj[k]).startswith(MASK_PREFIX)]
+        if masks:
+            layout.label(text="skin masked under this garment", icon="MOD_MASK")
     layout.label(text="engine: " + ("Auto-Rig Pro voxel" if arp_available()
                                     else "bone heat / surface"),
                  icon="MOD_VERTEX_WEIGHT")
