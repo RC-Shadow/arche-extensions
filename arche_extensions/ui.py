@@ -54,6 +54,17 @@ def draw_body(layout, context):
     else:
         layout.label(text="rig: " + rig.name, icon="ARMATURE_DATA")
 
+    from .weights import arp_available, GUARD_NAME
+    layout.label(text="engine: " + ("Auto-Rig Pro voxel" if arp_available()
+                                    else "bone heat / surface"),
+                 icon="MOD_VERTEX_WEIGHT")
+    guard = obj.modifiers.get(GUARD_NAME) if obj.type == "MESH" else None
+    if guard is not None:
+        layout.label(text="guard: %s, %.0f mm" % (guard.target.name if guard.target
+                                                   else "no target",
+                                                   guard.offset * 1000),
+                     icon="MOD_SHRINKWRAP")
+
     layout.separator()
     layout.label(text="Clothing", icon="MOD_CLOTH")
     draw_clothing_tools(layout, context)

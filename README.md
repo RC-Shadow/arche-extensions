@@ -8,8 +8,8 @@ garment weights properly, manage clothing, and repair what a Rigify conversion b
 
 | Button | What it does |
 |---|---|
-| **Bind Weights** | Skins a garment to the character with Auto-Rig Pro's voxel binder, then cleans up. **Never touches body masks.** |
-| **Add to Character Clothing** | Turns any mesh placed on the character into real HumGen clothing, then binds it. |
+| **Bind Weights** | Skins a garment to the character (Auto-Rig Pro voxel bind, or Blender bone heat without ARP), cleans up, adds a body-collision guard, and verifies every frame. **Never touches body masks.** |
+| **Add to Character Clothing** | Tags a mesh placed on the character as HumGen clothing and binds it. Optional HumGen fitting for garments built on the default body. |
 | **Add to Clothing Asset Library** | Saves **one** garment to your library, not the whole outfit. |
 | **Remove Clothing** | Deletes garments *and* the body masks they added, so no holes are left behind. |
 | **Re-bind Clothing to Rigify** | Fixes clothing that stopped following the rig after a Rigify conversion. |
@@ -39,16 +39,26 @@ that surface transfer never touches.
 
 ## What the bind does
 
-1. **ARP pseudo-voxel bind** — resolution slider, clamped 3–8, default 7. Falls back to
-   `POLYINTERP_NEAREST` surface transfer if Auto-Rig Pro is not installed.
-2. **Clean up** — cap influences at 4, drop dead and non-deform groups, remove bones a
-   garment must never follow (head, jaw, toes, face), fill any unweighted vertex,
-   normalise every vertex to exactly 1.0.
-3. **Remove arm bleed from the chest** — otherwise the chest sloshes when an arm moves.
-4. **Soften the seam** with a per-group smooth.
-
-Typical result: 15 sensible groups, every vertex at 1.000, zero unweighted, median 3
-influences.
+1. **Engine ladder** — Auto-Rig Pro pseudo-voxel bind (resolution slider, clamped 3–8,
+   default 7) → Blender bone-heat automatic weights → `POLYINTERP_NEAREST` surface
+   transfer from the body. The first engine that leaves under 10 % of vertices
+   unweighted wins. ARP and HumGen are both optional.
+2. **Clean up** — cap influences at 4, drop dead and non-deform groups, fill any
+   unweighted vertex, normalise every vertex to exactly 1.0.
+3. **Drop far-away bones by proximity, never by name** — a bone stays only if the skin
+   it drives on the body lies near the garment. A bone the body has no group for
+   (HumGen has no `DEF-jaw`) goes. The old name blacklist stripped `DEF-toe` off shoes
+   and, matching `ear`, `DEF-forearm` off every sleeve.
+4. **Remove arm bleed from the chest** — otherwise the chest sloshes when an arm moves.
+5. **Soften the seam** with a per-group smooth.
+6. **Body-collision guard** — a Shrinkwrap (*outside surface*, 4 mm) targeting the body,
+   placed **last** in the modifier stack. This is what removes clipping: a shirt modelled
+   partly inside the skin had ~800 vertices inside the body per frame with *every*
+   weighting engine (769 with no rig at all). With the guard: mean 3, max 21, worst
+   0.4 cm over 123 frames. Weights cannot fix geometry; this can.
+7. **Verify every frame** — vertices inside the body counted on each frame of the scene
+   range and reported in the status bar. Sampled checks have passed animations that
+   were broken in between.
 
 ## Install
 
@@ -114,19 +124,29 @@ a real garment, so it is not exposed.
 
 **Touch your body masks.** The binder only changes weights. Mask painting is yours.
 
-It also cannot fix a garment whose *geometry* fails. A closed-solid scanned garment with no
+It also cannot fix a garment whose *topology* fails. A closed-solid scanned garment with no
 armhole seam still stretches ~9.6× at the armpit under a high arm raise even with correct
-weights — that needs mesh work, not rigging.
+weights — that needs mesh work, not rigging. (A garment merely modelled *inside* the skin
+is handled by the collision guard.)
+
+**Refit your mesh.** Human Generator's own `add_obj` assumes a garment built on the
+default HumGen body and reshapes it onto the character — on a shirt already fitted to the
+character it moved the mesh 14 cm up and 30 cm forward. *Add to Character Clothing*
+therefore defaults to **Tag only**; pick *HumGen fitting* only for default-body garments.
 
 ## Verified
 
-Headless against a real character, Blender 4.5.11:
+Against a real character, Blender 4.5.11:
 
 - **Guards** — pose, body masks and weights all restored after a deliberate exception
-- **Bind** — 16.6 s, 15 groups, sums 1.000–1.000, 0 unweighted, influences med 3 / max 6,
-  only deform bones, no head/jaw/toe groups
-- **Preservation** — body masks, shape keys, drivers, modifier stack, `cloth` tag, `mask_0`
-  and the user's pose all byte-identical after a bind
+- **Shirt, 3,281 verts** — ARP 16 s, 11 groups (jaw and thighs dropped by proximity),
+  0 unweighted, influences med 2 / max 5; inside the body over 123 frames: mean 3,
+  max 21, worst 0.4 cm (before: ~950 per frame, 5 cm)
+- **Shoe, 183 verts** — `DEF-foot.L` + `DEF-toe.L`, guard after Subsurf: mean 0, max 5,
+  worst 0.4 cm (guard placed before Subsurf: 164)
+- **Without ARP** — bone-heat path binds the same shirt in 0.4 s with equivalent results
+- **Preservation** — body masks, shape keys, drivers, `cloth` tag, `mask_0` and the
+  user's pose unchanged after a bind; the guard is the only modifier added
 
 ## Licence
 

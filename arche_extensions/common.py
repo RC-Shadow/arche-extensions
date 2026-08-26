@@ -24,9 +24,9 @@ HG_RIGIFY_MARKER = "hg_rigify"
 # HumGen skips these when renaming vertex groups during its Rigify conversion.
 SKIP_PREFIXES = ("mask", "pin", "def-", "hair", "fh", "sim", "lip")
 
-# A garment must never follow these, whatever a binder decides.
-NEVER_BIND = ("head", "jaw", "toe", "eye", "tongue", "teeth", "brow", "cheek",
-              "nose", "lip", "chin", "ear")
+# No name blacklist for binding. Groups are dropped only when they carry no weight on
+# the mesh. (An earlier NEVER_BIND list stripped DEF-toe off shoes and, via "ear",
+# DEF-forearm off sleeves.)
 
 
 # --------------------------------------------------------------------------- lookup
@@ -112,6 +112,50 @@ def find_hg_body(rig):
         if child.type == "MESH" and child.name.startswith("HG_Body"):
             return child
     return None
+
+
+def find_body(rig, exclude=None):
+    """The mesh a garment should collide with, on any rig.
+
+    HumGen body when there is one (largest mesh carrying `hg_body` or named HG_Body*,
+    never `exclude` - a garment duplicated from the body keeps both markers), else the
+    largest mesh child of the rig that is not tagged as clothing.
+    """
+    if rig is None:
+        return None
+    candidates = [c for c in rig.children
+                  if c.type == "MESH" and c is not exclude
+                  and ("hg_body" in c or c.name.startswith("HG_Body"))]
+    if not candidates:
+        candidates = [c for c in rig.children
+                      if c.type == "MESH" and c is not exclude
+                      and "cloth" not in c and "shoe" not in c]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: len(c.data.vertices))
+
+
+def rest_coords(obj):
+    """World-space vertex positions with shape keys mixed in, no modifiers.
+
+    `obj.data.vertices` is the shape-key BASIS. HumGen keeps the character's real body
+    in a `LIVE_KEY_PERMANENT` key at 1.0, so the basis is a different body: measured
+    against it, 0 of 1,268 neck vertices were near a collar that covers the neck.
+    """
+    world = obj.matrix_world
+    keys = getattr(obj.data, "shape_keys", None)
+    if keys is None:
+        return [world @ v.co for v in obj.data.vertices]
+    ref = keys.reference_key
+    coords = [v.co.copy() for v in ref.data]
+    for key in keys.key_blocks:
+        if key == ref or abs(key.value) < 1e-4 or key.mute:
+            continue
+        rel = key.relative_key.data
+        value = key.value
+        for i, (kd, rd) in enumerate(zip(key.data, rel)):
+            coords[i] += (kd.co - rd.co) * value
+    return [world @ co for co in coords]
 
 
 def deform_bone_names(rig):
